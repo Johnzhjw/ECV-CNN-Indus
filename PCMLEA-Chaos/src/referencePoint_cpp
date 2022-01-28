@@ -1,0 +1,79 @@
+#include "referencePoint.h"
+#include <limits>
+#include <stdio.h>
+
+using namespace std;
+
+
+
+// ----------------------------------------------------------------------
+// Other strct_utility_info.utility functions
+// ----------------------------------------------------------------------
+
+void generate_recursive(vector<CReferencePoint> *rps, CReferencePoint *pt, size_t num_objs,
+                        size_t left, size_t total, size_t element)
+{
+    if (element == num_objs - 1) {
+        pt->pos()[element] = static_cast<double>(left) / total;
+        rps->push_back(*pt);
+    } else {
+        for (size_t i = 0; i <= left; i += 1) {
+            pt->pos()[element] = static_cast<double>(i) / total;
+            generate_recursive(rps, pt, num_objs, left - i, total, element + 1);
+        }
+    }
+}
+// ----------------------------------------------------------------------
+void GenerateReferencePoints(vector<CReferencePoint> *rps, size_t M, int *p, int size)
+{
+    CReferencePoint pt(M);
+
+    generate_recursive(rps, &pt, M, p[0], p[0], 0);
+
+    if (size > 1) { // two layers of reference points (Check Fig. 4 in NSGA-III paper)
+        vector<CReferencePoint> inside_rps;
+        generate_recursive(&inside_rps, &pt, M, p[1], p[1], 0);
+
+        double center = 1.0 / M;
+
+        for (size_t i = 0; i < inside_rps.size(); i += 1) {
+            for (size_t j = 0; j < inside_rps[i].pos().size(); j += 1) {
+                inside_rps[i].pos()[j] = (center + inside_rps[i].pos()[j]) / 2; // (k=num_divisions/M, k, k, ..., k) is the center point
+            }
+            rps->push_back(inside_rps[i]);
+        }
+    }
+}
+// ----------------------------------------------------------------------
+/*
+int main()
+{
+int i,j;
+int d[256];
+int m=3;
+printf("Input the objective number:\n");
+scanf("%d",&m);
+printf("Input the number of division layers:\n");
+scanf("%d",&j);
+printf("Input the divisions:\n");
+for(i=0;i<j;i++)
+{
+int tmp;
+scanf("%d",&tmp);
+d[i]=(tmp);
+}
+vector<CReferencePoint> rps;
+GenerateReferencePoints(&rps, m, d, j);
+for(i=0;i<rps.size();i++)
+{
+printf("<%04d>( ",i+1);
+for(j=0;j<m;j++)
+{
+printf("%lf ",rps[i].pos()[j]);
+}
+printf(")   ");
+}
+printf("\n");
+return 0;
+}*/
+

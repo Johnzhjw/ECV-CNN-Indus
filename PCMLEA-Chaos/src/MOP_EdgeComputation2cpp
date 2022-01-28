@@ -1,0 +1,613 @@
+//#pragma warning(disable:4996)
+#include "stdio.h"
+#include "string.h"
+#include "stdlib.h"
+#include "math.h"
+#include "time.h"
+#include "MOP_EdgeComputation.h"
+#include<algorithm>
+#include<fstream>
+#include<string>
+#include<sstream>
+#include<iostream>
+#include <vector>
+
+using namespace std;
+
+#define M_PI       3.14159265358979323846   // pi
+
+//#include<vector>
+//using namespace std;
+
+const int ES_Num = 1500;//边缘服务器ES的数量为39个
+const int Node_Num = 5995;//节点RSU的数量为239个
+const int Time_Per_ES_Works = 12;  // 每个ES工作的时间，假设时间不变，用于通过功率求能耗用的
+const int Trans_Speed = 500000;//传输速率500Kb/s
+const int Prop_Speed = 2 * pow(10, 8);//传播速率,int占4个字节，2*pow(10,8)不会溢出
+const int Group_Size = 1500;
+const int Per_Core_HandleData_Speed = 10;//每个核单位时间处理数据包的个数
+const int Per_CorePower_Max = 45;//单个核的最大工作阀值
+const int ES_Core_Max = 32;//边缘服务器的核的最大值
+const int P_Idle = 300;//服务器在空闲状态下的功率
+const int P_Full = 495;//服务器在满状态下时的功率
+const int Per_Core_Price = 5;//每个处理器的价格
+const double Per_ES_Max_R = 5000;//每个ES的覆盖范围半径为5km
+
+vector<double> TTrans_Speed(Node_Num);//rj向ei传输数据得传输时延
+vector<double> Tprop1(Node_Num);//rj向ei传输数据得传播时延
+vector<double> Tprop2(Node_Num);//rj向云服务器的传播时延
+vector<double> Tqueue(ES_Num);//rj向ei传输数据得队列时间
+vector<double> Tqueue1(Node_Num);//rj向ei传输数据得队列时间  扩展
+vector<int>    which(Node_Num);//RSU分配到es还是云服务器，1分配到es，0到云
+vector<int>    Per_Rsu_Mark(Node_Num);
+
+double Per_ES_HandleData_Speed;//每个ES处理数据包的速率
+int t321 = 0;
+char self_testInstName[1024];
+int self_nobj;
+int self_nvar;
+int self_position_parameters;
+
+int Have_Done_The_Num_Of_RSU[ES_Num];
+int Which_RSU_In_Group_Is_ES[ES_Num];  // 每个ES在各自的类中是第几个
+int Core_Num_Per_ES_Array[ES_Num];  // 每个ES有多少核
+double Load_Rate_Per_ES_Arrary[ES_Num];  // 每一类所有负载率的和
+
+vector<vector<vector<double>>> All_Position;
+
+vector<double> Cloud_Server_Position = { 39.491, 116.552 }; //定义一个向量，里面是云服务器的经纬度，此程序只有一个云服务器
+
+int Which_RSU_Is[ES_Num];
+double Return_Attribute[Node_Num];
+int PerCluster_Num[ES_Num];
+vector<double>Handle_Task_Rate_Per_ES(ES_Num);
+
+double *Total_Load_Rate_Per_ES;
+int *Which_RSU_Is_ES;
+int *Core_Num_Per_ES;  // 这是接每个ES处理器个数的指针
+int *WhichRSu_In_Group_Is_ES;
+
+double *Load_Rate_Per_ES_Function(vector<vector<vector<double>>>
+                                  Three_Dimension_Vector)  // 返回一个数组首地址，数组里写着这一类所有负载率的和
+{
+    double accumulate_load_rate = 0;  // 累加负载率变量
+    int index = 0;  // 向量里每个个体每个个体的遍历，顺序从1到239，如果有239个个体
+    int i = 0;  // 返回数组的第几个
+    int j = 0;  // 表示是这一类的第几个
+    for(vector<vector<vector<double>>>::iterator it = Three_Dimension_Vector.begin(); it != Three_Dimension_Vector.end(); it++) {
+        j = 1;
+        for(vector<vector<double>>::iterator itt = (*it).begin(); itt != (*it).end(); itt++) { // 遍历每一行
+            accumulate_load_rate += (*itt).at(5);
+            //cout << "accumulate_load_rate " << j << " " << accumulate_load_rate << endl;
+            //cout << "index:  " << index << endl;  // 总的来说是第几个
+            //if (index == 16)
+            //{
+            //	break;
+            //}
+            if(j >= PerCluster_Num[i]) {
+                Load_Rate_Per_ES_Arrary[i] = accumulate_load_rate;
+                accumulate_load_rate = 0;
+                //cout << "index:  " << index << endl;  // 总的来说是第几个
+                //cout << "i:  " << i << endl;   // 写到数组第几个元素了
+                //cout << "j:  " << j << endl;  //  在当前类里来说第几个
+                //cout << "Load_Rate_Per_ES_Arrary[i]:   " << Load_Rate_Per_ES_Arrary[i] << endl;
+                //cout << " PerCluster_Num[i]  " << PerCluster_Num[i] << endl;
+                i++;
+            }
+            j++;
+            index++;
+        }
+    }
+    //for (int j = 0; j < 39; j++)
+    //{
+    //	cout << " " << Which_RSU_In_Group_Is_ES[j] << endl;
+    //}
+    return Load_Rate_Per_ES_Arrary;
+}
+
+int *Core_Num_Per_ES_Function(vector<vector<vector<double>>>
+                              Three_Dimension_Vector)  // 返回一个数组首地址，数组里写着每个ES有多少核
+{
+    int index = 0;  // 向量里每个每个的遍历
+    int i = 0;  // 返回数组的第几个
+    int j = 0;  // 表示是这一类的第几个
+    for(vector<vector<vector<double>>>::iterator it = Three_Dimension_Vector.begin(); it != Three_Dimension_Vector.end(); it++) {
+        j = 0;
+        for(vector<vector<double>>::iterator itt = (*it).begin(); itt != (*it).end(); itt++) { // 遍历每一行
+            Return_Attribute[index] = (*itt).at(2);
+            if(Return_Attribute[index] == 1) {
+                Core_Num_Per_ES_Array[i] = Three_Dimension_Vector[i][j][4];
+                //cout << "index:  " << index << endl;
+                //cout << "i:  " << i << endl;
+                //cout << "j:  " << j << endl;
+                //cout << "Core_Num_Per_ES_Array:   " << Core_Num_Per_ES_Array[j] << endl;
+                i++;
+            }
+            j++;
+            index++;
+        }
+    }
+    //for (int j = 0; j < 39; j++)
+    //{
+    //	cout << " " << Which_RSU_In_Group_Is_ES[j] << endl;
+    //}
+    return Core_Num_Per_ES_Array;
+}
+
+int *Get_Which_RSU_In_Group_Is_ES(vector<vector<vector<double>>>
+                                  Three_Dimension_Vector)  //返回每个ES，是第几类的第几个，方便目标函数书写
+{
+    int index = 0;  // 向量里每个每个的遍历
+    int i = 0;  //返回数组的第几个
+    int j = 0;  // 表示是这一类的第几个
+    for(vector<vector<vector<double>>>::iterator it = Three_Dimension_Vector.begin(); it != Three_Dimension_Vector.end(); it++) {
+        j = 0;
+        for(vector<vector<double>>::iterator itt = (*it).begin(); itt != (*it).end(); itt++) { // 遍历每一行
+            Return_Attribute[index] = (*itt).at(2);
+            if(Return_Attribute[index] == 1) {
+                Which_RSU_In_Group_Is_ES[i] = j;
+                //cout << "index:  " << index << endl;
+                //cout << "i:  " << i << endl;
+                //cout << "j:  " << j << endl;
+                //cout << "Which_RSU_In_Group_Is_ES:   " << Which_RSU_In_Group_Is_ES[j] << endl;
+                i++;
+            }
+            j++;
+            index++;
+        }
+    }
+    //for (int j = 0; j < 39; j++)
+    //{
+    //	cout << " " << Which_RSU_In_Group_Is_ES[j] << endl;
+    //}
+    return Which_RSU_In_Group_Is_ES;
+}
+
+int *Get_Which_RSU_Is_ES(vector<vector<vector<double>>> Three_Dimension_Vector)  // 这是每个ES的总序号
+{
+    int index = 0;  // 向量里每个每个的遍历
+    int i = 0;
+
+    for(vector<vector<vector<double>>>::iterator it = Three_Dimension_Vector.begin(); it != Three_Dimension_Vector.end(); it++) {
+        for(vector<vector<double>>::iterator itt = (*it).begin(); itt != (*it).end(); itt++) { // 遍历每一行
+            Return_Attribute[index] = (*itt).at(2);
+            if(Return_Attribute[index] == 1) {
+                Which_RSU_Is[i] = index;
+            }
+            index++;
+        }
+    }
+    return Which_RSU_Is;
+}
+
+double Caculate_Real_Distance(vector<double> p1, vector<double> p2)
+{
+    double dlon, dlat;  // dlon express the longitude differece of the two position, so does dlat
+    double a, c, r;  // express a parameter of caculate real distance
+
+    /* Use s1[] for converting from degree to radian */
+    double s1[4];
+    s1[0] = (p1[0] * M_PI) / 180;
+    s1[1] = (p1[1] * M_PI) / 180;
+    s1[2] = (p2[0] * M_PI) / 180;
+    s1[3] = (p2[1] * M_PI) / 180;
+
+    dlat = s1[0] - s1[2];  // latitude difference between p1 and p2
+    //printf("dlat: %f \n ", dlat);
+    dlon = s1[1] - s1[3];  // longitude difference between p1 and p2
+    //printf("dlon: %f \n", dlon);
+    a = pow(sin(dlat / 2), 2) + cos(s1[0]) * cos(s1[2]) * pow(sin(dlon / 2), 2);
+    c = 2 * atan2(sqrt(a), sqrt(1 - a));
+    r = 6371000;  // the radius of earth
+    return c * r;  // return the real distance of two positions
+}
+
+void Initialize_data_EdgeComputation(int curN, int numN)
+{
+    All_Position.resize(Group_Size);
+
+    ifstream ifs;
+    for(int i = 1; i < Group_Size + 1; i++) { // i express which file
+        int mma = 1;
+        if(i > 99) {
+            mma = 10;
+        }
+        if(i > 999) {
+            mma = 100;
+        }
+        string file = "../Data_all/Data_EdgeComputation/Result_Out_";
+        file += to_string(100 * mma + i);
+        file += ".txt";
+        //cout << file << endl;
+        ifs.open(file, ios::in);
+        string buff;
+        if(!ifs) {
+            cout << "打开失败" << endl;
+        }
+        int j = 0;  // express which row
+        All_Position[i - 1].resize(20);
+        while(getline(ifs, buff)) {
+            //cout << str<<endl;
+
+            char *saveptr;
+            char *s_input = (char *)buff.c_str();
+            const char * split = " ";
+            // 以‘ ’为分隔符拆分字符串
+            char *p = strtok_s(s_input, split, &saveptr);
+            double a;
+            while(p != NULL) {
+                // char * -> int
+                a = atof(p);
+                //cout << a << endl;
+                //All_Position[i][j].resize(7);
+                All_Position[i - 1][j].push_back(a);
+                p = strtok_s(NULL, split, &saveptr);
+            }//end while
+            j++;
+        }
+        PerCluster_Num[i - 1] = j;
+        //cout << PerCluster_Num[i] << endl;
+        //printf("%d\n", PerCluster_Num[i]);
+        All_Position[i - 1].erase(All_Position[i - 1].begin() + j, All_Position[i - 1].end());
+        ifs.close();
+    }
+    //
+    ifs.open("../Data_all/Data_EdgeComputation/Load_Rate_To_Program_01.txt");
+    string s;
+    auto fit = All_Position.begin();
+    auto sit = (*fit).begin();
+    double a;
+    while(getline(ifs, s)) {
+        istringstream iss(s);
+        iss >> a;
+        //cout << "-----------" << endl;
+        //cout << "a: " <<fixed<<setprecision(10)<< a << " s: " << s << endl;
+        //cout << "-----------" << endl;
+        if(sit == (*fit).end()) { // 判断是否到最后一行
+            fit++;
+            if(fit == All_Position.end())
+                break;
+            sit = (*fit).begin();
+        }
+        (*sit).push_back(a);   // 尾插负载率
+        sit++;
+    }
+    ifs.close();
+
+    int ccc = 0;
+
+    for(int i = 0; i < ES_Num; i++) {
+        for(int j = 0; j < All_Position[i].size(); j++) {
+            Per_Rsu_Mark[ccc] = All_Position[i][j][2];
+            ccc++;
+        }
+    }
+}
+
+void InitPara_EdgeComputation(char* instName, int numObj, int numVar, int posPara)
+{
+    strcpy(self_testInstName, instName);
+    self_nobj = numObj;
+    self_nvar = numVar;
+    self_position_parameters = posPara;
+
+    return;
+}
+void Fitness_EdgeComputation(double *Per_Rsu_Mark, double *fitness, double *constrainV, int nx, int M)
+{
+    //ifstream in("../Data_all/Data_EdgeComputation/test.txt");
+    //for(int i = 0; i < All_Position.size(); i++) {
+    //    for(int j = 0; j < All_Position[i].size(); j++) {
+    //        in >> All_Position[i][j][2];
+    //    }
+    //}
+
+    int k = 0;
+    double temp1 = 0;//指向具体数据
+    int temp2 = 0;//指向数据的下标
+    int temp3 = 0;
+    vector<int>temp8;
+    ifstream infile;
+    infile.open("../Data_all/Data_EdgeComputation/data.txt");
+    int temp;
+    while(!infile.eof()) {
+        infile >> temp;
+        temp8.push_back(temp);
+    }
+    infile.close();
+
+    for(int i = 0; i < Node_Num; i++) {
+        temp1 = Per_Rsu_Mark[k];
+        temp3 = temp2 = k;
+        for(int j = 0; j < temp8[i]; j++) {
+            if(Per_Rsu_Mark[k + j] > temp1) {
+                temp1 = Per_Rsu_Mark[k + j];
+                Per_Rsu_Mark[temp3] = 0;
+                temp3 = temp2 = k + j;
+            } else {
+                Per_Rsu_Mark[k + j] = 0;
+            }
+        }
+        Per_Rsu_Mark[temp2] = 1;
+        temp3 = temp1 = temp2 = 0;
+        k += temp8[i];
+    }
+    int oo = 0;
+    for(int i = 0; i < All_Position.size(); i++) {
+        for(int j = 0; j < All_Position[i].size(); j++) {
+            All_Position[i][j][2] = Per_Rsu_Mark[oo];
+            oo++;
+
+        }
+    }
+
+    for(int i = 0; i < All_Position.size(); i++) {
+        for(int j = 0; j < All_Position[i].size(); j++) {
+            if(All_Position[i][j][2] == 1) {
+                All_Position[i][j][4] = 4;
+            } else {
+                All_Position[i][j][4] = 0;
+            }
+        }
+    }
+
+    double Store_Position[6];
+    int ES_Flag = 0, Rank_0 = 0;  // i express which
+    for(vector<vector<vector<double>>>::iterator it = All_Position.begin(); it != All_Position.end(); it++) { //迭代每个类
+        if(Rank_0 >= ES_Num) {
+            break;
+        }
+        int Rank_1 = 0;  // which Position
+        for(vector<vector<double>>::iterator itt = (*it).begin(); itt != (*it).end(); itt++) { // 迭代每个位置
+            int Rank_2 = 0;  // which attribute
+            for(vector<double> ::iterator t = (*itt).begin(); t != (*itt).end(); t++) { // 迭代每个属性
+                Store_Position[Rank_2] = (*t);
+                //cout << (*t) << " ";
+                //cout << Store_Position[Rank_2] << " ";
+                Rank_2++;
+            }//cout << endl;
+            if(Store_Position[2] == 1) {
+                ES_Flag = Rank_1;
+                //printf("______________________________");
+            }
+            Rank_1++;
+            //printf("Rank_1:%d \n", Rank_1);
+            //printf("PerCluster_Num:%d \n", PerCluster_Num[Rank_0]);
+        }
+        for(int h = 0; h < PerCluster_Num[Rank_0]; h++) {
+            All_Position[Rank_0][h][3] = Caculate_Real_Distance(All_Position[Rank_0][ES_Flag], \
+                                         All_Position[Rank_0][h]);
+            //printf("hello");
+            //cout << All_Position_0[Rank_0][h][3] << endl;
+            //All_Position_0[Rank_0][h][6] = Caculate_O_Distance(All_Position_0[Rank_0][ES_Flag],\
+            All_Position_0[Rank_0][h]);
+            //cout << All_Position_0[Rank_0][h][4] << endl;
+        }
+        Rank_0++;
+    }
+
+    Have_Done_The_Num_Of_RSU[0] = PerCluster_Num[0];  // Initialize the first element
+    for(int i = 1; i < ES_Num; i++) {
+        Have_Done_The_Num_Of_RSU[i] = PerCluster_Num[i] + Have_Done_The_Num_Of_RSU[i - 1];
+        // cout << Have_Done_The_Num_Of_RSU[i] << endl;
+    }
+
+    Total_Load_Rate_Per_ES = Load_Rate_Per_ES_Function(All_Position);
+    Which_RSU_Is_ES = Get_Which_RSU_Is_ES(All_Position);
+    Core_Num_Per_ES = Core_Num_Per_ES_Function(All_Position);
+    WhichRSu_In_Group_Is_ES = Get_Which_RSU_In_Group_Is_ES(All_Position);
+
+    for(int i = 0; i < ES_Num; ++i) {
+        if(45 * 4 > Total_Load_Rate_Per_ES[i]) {
+            Handle_Task_Rate_Per_ES[i] = 1;
+        } else {
+            Handle_Task_Rate_Per_ES[i] = 45 * 4 / Total_Load_Rate_Per_ES[i];
+        }
+    }
+
+    vector<vector<vector<double>>>TEMP;
+    double Distance_RSU_To_Cloud_Server[ES_Num][20];  // 所有rsu到云服务器的距离
+    double Accumulate_Load_Rate_Of_One_Group = 0;
+    vector<double>Total_Request_Per_ES(ES_Num);
+    double TCl[Node_Num];//数据直接传输到云的RSU的延迟
+
+    double q1 = 0;
+    double T = 0;
+    double T1 = 0;
+
+    vector<double>m1(Group_Size);//定义中间变量m1
+    vector<double>m2(Group_Size, 1);//定义中间变量m2
+    vector<double>m3(Group_Size, 1);//定义中间变量m3
+    vector<double>m4(Group_Size, 1);//定义中间变量m4
+    vector<double>m5(Group_Size, 1);//定义中间变量m5
+    vector<double>m6(Group_Size);//定义中间变量m6
+    vector<double>m7(Group_Size, 0);//定义中间变量m7
+
+    TEMP.resize(ES_Num);
+    for(int i = 0; i < All_Position.size(); i++) {
+        TEMP[i].resize(All_Position[i].size());
+        for(int j = 0; j < All_Position[i].size(); j++) {
+            TEMP[i][j].resize(2);
+            TEMP[i][j][0] = All_Position[i][j][0];
+            TEMP[i][j][1] = All_Position[i][j][1];
+            Distance_RSU_To_Cloud_Server[i][j] = Caculate_Real_Distance(TEMP[i][j], Cloud_Server_Position);
+        }
+    }
+
+    for(int i = 0; i < All_Position.size(); i++) {
+        Accumulate_Load_Rate_Of_One_Group = 0;
+        for(int j = 0; j < All_Position[i].size(); j++) {
+            Accumulate_Load_Rate_Of_One_Group += All_Position[i][j][5];
+        }
+        Total_Request_Per_ES[i] = Accumulate_Load_Rate_Of_One_Group;
+    }  // 计算每个es的总请求率, 计算方法是ES所在类的所有RSU的负载率之和
+
+    for(int i = 0; i < Group_Size; ++i) {
+        m1[i] = Handle_Task_Rate_Per_ES[i] * Total_Load_Rate_Per_ES[i] / 10;
+        for(int j = 0; j < Core_Num_Per_ES[i]; ++j) {
+            m2[i] *= Core_Num_Per_ES[i] * m1[i];
+            m3[i] *= Core_Num_Per_ES[i] - 1;
+        }
+        for(int j = 0; j < Core_Num_Per_ES[i] - 1; ++j) {
+            for(int l = 0; l < j; ++l) {
+                m4[i] *= Core_Num_Per_ES[i] * m1[i];
+                if(j > 1) {
+                    m5[i] *= j - 1;
+                }
+                m6[i] = m4[i] / m5[i];
+            }
+            m7[i] += m6[i];
+        }
+    }
+    for(int i = 0; i < ES_Num; ++i) {
+        Tqueue[i] = m2[i] / m3[i] / (1 - m1[i]) / (m7[i] + m2[i] / m3[i] / (1 - m1[i]));//计算排列时间
+    }
+    int y = 0;
+    for(int i = 0; i < ES_Num; i++) {
+        for(int j = 0; j < All_Position[i].size(); j++) {
+            Tqueue1[y + j] = Tqueue[i];
+        }
+        y += All_Position[i].size();
+    }
+    double Load_Rate_Per_RSU[Node_Num];  // 存每个RSU(每个节点负载率)的指针
+    int m22 = 0;
+    for(int i = 0; i < ES_Num; i++) {
+        for(int j = 0; j < All_Position[i].size(); j++) {
+            Load_Rate_Per_RSU[m22 + j] = All_Position[i][j][5];
+        }
+        m22 += All_Position[i].size();
+    }
+
+    for(int i = 0; i < Node_Num; ++i) {
+        TTrans_Speed[i] = Load_Rate_Per_RSU[i] / Trans_Speed;
+    }//ES到云服务器的传输时间
+
+    int q = 0;
+    for(int i = 0; i < All_Position.size(); i++) {
+        for(int j = 0; j < All_Position[i].size(); j++) {
+            Tprop2[q] = 5.0 / Prop_Speed;
+            q++;
+        }
+    }//计算rsu到云服务器的传播速率及总延迟
+    int t = 0;
+    for(int i = 0; i < All_Position.size(); i++) {
+        for(int j = 0; j < All_Position[i].size(); j++) {
+            Tprop1[t] = All_Position[i][j][3] / Trans_Speed;
+            t++;
+        }
+    }
+
+    for(int i = 0; i < Node_Num; ++i) {
+        TCl[i] = TTrans_Speed[i] + Tprop2[i];
+        if(TCl[i] > (TTrans_Speed[i] + Tprop1[i] + Tqueue1[i])) {
+            which[i] = 1;
+        } else {
+            which[i] = 0;
+        }
+    }//RSU卸载到云服务器还是边缘服务器
+
+    for(int j = 0; j < Node_Num; ++j) {
+        if(which[j] = 1) {
+            q1 += (TTrans_Speed[j] + Tprop1[j] + Tqueue1[j]) * 0.5 + \
+                  (1 - 0.5) * TCl[j];
+        }
+        T1 += q1;
+    }
+
+    T = T1 / Node_Num;//目标一
+
+    double Total_Load_Rate = 0;  // Total load rate of all RSU
+    double Mean_Load_Rate;  // The average load rate
+    double Sum_1_Thrid_Goal = 0;  // intermediate variable Sum1
+    double Sum_2_Thrid_Goal = 0;  // intermediate variable Sum2
+    double Fload;
+    for(int i = 0; i < Group_Size; ++i) {
+        Sum_1_Thrid_Goal += Total_Load_Rate_Per_ES[i];
+    }
+
+    Mean_Load_Rate = Sum_1_Thrid_Goal / Group_Size;
+    for(int i = 0; i < Group_Size; ++i) {
+        Sum_2_Thrid_Goal += (Total_Load_Rate_Per_ES[i] - Mean_Load_Rate) * (Total_Load_Rate_Per_ES[i] - Mean_Load_Rate);
+
+    }
+    Fload = sqrt(Sum_2_Thrid_Goal / Group_Size);//目标二*/
+
+    vector<double>Power_Per_ES(Group_Size);  // 定义边缘服务器在t个单位时间的功耗
+    vector<double>Energy_Per_ES(Group_Size);  // 定义边缘服务器在t个单位时间的能耗
+    double Energy_Total = 0;
+    for(int i = 0; i < Group_Size; i++) {
+        if(Total_Load_Rate_Per_ES[i] < Per_CorePower_Max) {
+            Power_Per_ES[i] = P_Idle + (P_Full - P_Idle) * Total_Load_Rate_Per_ES[i] / Core_Num_Per_ES[i] / Per_CorePower_Max;
+
+        } else {
+            Power_Per_ES[i] = P_Full;
+        }
+        Energy_Per_ES[i] = Power_Per_ES[i] * Time_Per_ES_Works;
+        Energy_Total += Energy_Per_ES[i];
+    }
+    //目标三，求所有ES的总能耗最小*/
+
+    int If_Covered_By_ES = 0; // Mark The RSU If Coverd by ES
+    double Sum_RSU_Cover_By_ES = 0;  // Caculated the sum of RSU which is Coverd by ES
+    double Real_Distance_RSU_To_Every_ES;  // 计算每个RSU到所有ES的距离
+
+    for(int i = 0; i < Group_Size; i++) { // This RSU belong to which Group
+        for(int j = 0; j < PerCluster_Num[i]; j++) { // This RSU is belong to which one of this group
+            for(int k = 0; k < Group_Size; k++) { // allow this RSU is caculated with every ES
+                Real_Distance_RSU_To_Every_ES = Caculate_Real_Distance(All_Position[i][j], \
+                                                All_Position[k][Which_RSU_In_Group_Is_ES[k]]);  // 计算距离
+                if(Real_Distance_RSU_To_Every_ES <= Per_ES_Max_R) { // If the RSU is covered
+                    If_Covered_By_ES += 1;
+                }
+            }
+        }
+    }
+    // 目标四，让所有RSU被ES覆盖的总数最多
+
+    double distance_sum = 0;
+    for(int i = 0; i < Group_Size; i++) { // This RSU belong to which Group
+        for(int j = 0; j < PerCluster_Num[i]; j++) { // This RSU is belong to which one of this group
+            for(int k = 0; k < Group_Size; k++) { // allow this RSU is caculated with every ES
+                Real_Distance_RSU_To_Every_ES = Caculate_Real_Distance(All_Position[i][j], \
+                                                All_Position[k][Which_RSU_In_Group_Is_ES[k]]);  // 计算距离
+                distance_sum += Real_Distance_RSU_To_Every_ES;
+            }
+
+        }
+    }
+    //目标五
+
+    fitness[0] = T;
+    fitness[1] = Fload;
+    fitness[2] = Energy_Total / 10000; // The third goal
+    fitness[3] = If_Covered_By_ES / 10000  ; // The Fourth goal
+    fitness[4] = distance_sum / 100000000;
+    fitness[5] = ES_Num;
+    return;
+}
+
+void SetLimits_EdgeComputation(double *minLimit, double *maxLimit, int dim)
+{
+    for(int i = 0; i < dim; i++) {
+        minLimit[i] = 0.0;
+        maxLimit[i] = 1.0;
+    }
+}
+
+int CheckLimits_EdgeComputation(double* Per_Rsu_Mark, int nx)
+{
+    for(int i = 0; i < Node_Num; i++) {
+        if(Per_Rsu_Mark[i] < 0.0 || Per_Rsu_Mark[i] > 1.0) {
+            printf("error");
+            return false;
+        }
+    }
+    return true;
+}
+
+void Finalize_EdgeComputation()
+{
+    vector<vector<vector<double>>>().swap(All_Position);
+
+    return;
+}
